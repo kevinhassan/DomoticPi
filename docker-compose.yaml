@@ -1,0 +1,89 @@
+version: "3.7"
+
+services:
+
+  traefik:
+    image: "traefik:v2.4"
+    container_name: "traefik"
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.dnsovertls.address=:853"
+      - "--entrypoints.dns.address=:53"
+      - "--entrypoints.udpdns.address=:53/udp"
+      - "--certificatesresolvers.mytlschallenge.acme.httpchallenge=true"
+      - "--certificatesresolvers.mytlschallenge.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.mytlschallenge.acme.email=kevinhassan.pro@gmail.com"
+      - "--certificatesresolvers.mytlschallenge.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - 53:53/udp
+      - 53:53
+      - 853:853
+      - 80:80
+      - 443:443
+    volumes:
+      - "./letsencrypt:/letsencrypt"
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+
+  transmission:
+    image: linuxserver/transmission:version-3.00-r2
+    container_name: transmission
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - TRANSMISSION_WEB_HOME=/flood-for-transmission/
+      - USER=${TRANSMISSION_USERNAME}
+      - PASS=${TRANSMISSION_PASSWORD}
+    volumes:
+      - ./config:/config
+      - ${TRANSMISSION_DOWNLOAD_PATH}:/downloads
+      - ${TRANSMISSION_WATCH_PATH}:/watch
+    ports:
+      - 9091:9091
+      - 51413:51413
+      - 51413:51413/udp
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.transmission.rule=Host(`transmission.example.com`)"
+      - "traefik.http.routers.transmission.entrypoints=websecure"
+      - "traefik.http.routers.transmission.tls.certresolver=mytlschallenge"
+  pihole:
+    image: pihole/pihole:v5.8.1
+    container_name: pihole
+    domainname: pihole.example.com
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - WEBPASSWORD=${PIHOLE_PASSWORD}
+      - VIRTUAL_HOST=pihole.example.com
+    volumes:
+      - ${PIHOLE_PATH}:/etc/pihole/
+      - ${PIHOLE_DNS_MASK_PATH}:/etc/dnsmasq.d/
+    dns:
+      - 127.0.0.1
+      - 1.1.1.1
+    cap_add:
+      - NET_ADMIN  
+    restart: unless-stopped
+    labels:
+      - traefik.enable=true
+      
+    ### Web UI (HTTP/HTTPS)
+      - traefik.http.routers.pihole-secure.entrypoints=websecure
+      - traefik.http.routers.pihole-secure.rule=Host(`pihole.example.com`)
+      - traefik.http.routers.pihole-secure.tls=true
+      - traefik.http.routers.pihole-secure.tls.certresolver=mytlschallenge
+      - traefik.http.routers.pihole-secure.service=pihole-web
+      - traefik.http.services.pihole-web.loadbalancer.server.port=80
+   
+    ### DNS-over-TLS (853 Traefik -> 53 Pi-hole)
+      - traefik.tcp.routers.pihole-dnsovertls.rule=HostSNI(`pihole.example.com`)
+      - traefik.tcp.routers.pihole-dnsovertls.entrypoints=dnsovertls
+      - traefik.tcp.routers.pihole-dnsovertls.tls.certresolver=mytlschallenge
+      - traefik.tcp.routers.pihole-dnsovertls.service=pihole
+      - traefik.tcp.services.pihole.loadbalancer.server.port=53
